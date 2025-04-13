@@ -1,0 +1,186 @@
+import os 
+import sys
+from src.constant import *
+from src.utils.main_utils import MainUtils
+from src.exception import CustomException
+from dataclasses import dataclass 
+from sklearn.metrics import accuracy_score
+import pandas as pd
+import numpy as np 
+from typing import Generator, List, Tuple
+from xgboost import XGBClassifier
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.model_selection import GridSearchCV, train_test_split
+from src.logger import logging
+
+@dataclass 
+class ModelTrainerConfigClass:
+    artifact_folder = os.path.join(artifact_folder)
+    trained_model_path = os.path.join(artifact_folder, "model.pkl")
+    expected_accuracy = 0.45
+    model_config_file_path = os.path.join('config', "model.yaml")
+
+class ModelTrainerClass:
+    def __init__(self):
+        self.model_trainer_config = ModelTrainerConfigClass()
+        self.utils = MainUtils()
+        self.models = {
+            'XGBClassifier': XGBClassifier(),
+            'GradientBoostingClassifier': GradientBoostingClassifier(),
+            'SVC': SVC(),
+            'RandomForestClassifier': RandomForestClassifier() 
+        }
+
+    def evaluate_model(self,x, y, models):
+        try: 
+            X_train, X_test, y_train, y_test = train_test_split(
+                x,y, test_size=0.2, random_state=42
+            )
+            
+            report = {}
+
+            for i in range(len(list(models))):
+                models = list(models.values())[i]
+
+                models.fit(X_train, y_train)
+
+                y_train_pred = models.predict(X_train)
+                y_test_pred = models.predict(X_test)
+
+                train_model_score = accuracy_score(y_train, y_train_pred)
+                test_model_score = accuracy_score(y_test, y_test_pred)
+
+                report[list(models.keys())[i]] = test_model_score
+            
+            return report 
+
+        except Exception as e:
+            raise CustomException(sys, e) from e
+
+    
+    def best_model(self, 
+                   x_train:np.array,
+                    x_test:np.array,
+                    y_train:np.array,
+                    y_test:np.array):
+        try:
+            model_report: dict = self.evaluate_model(
+                x_train = X_train,
+                y_train = y_train,
+                x_test = X_test,
+                y_test = y_test,
+                models= self.model
+
+            )
+            print(model_report)
+
+            best_model_score = max(sorted(model_report.values()))
+
+            ## To get the best model name 
+
+            best_model_name = list(model_report.keys())[
+                list(model_report.values()).index(best_model_score)
+            ]
+
+            best_model_object = self.models[best_model_name]
+
+
+            return best_model_name, best_model_score, best_model_object
+
+            
+        except Exception as e:
+            raise CustomException(sys, e) from e
+        
+    def fine_tune_best_model(self,
+                             best_model_object: object,
+                             best_model_name,
+                             X_train,
+                             y_train,
+                             )-> object:
+        try:
+            model_param_grid = self.utils.read_yaml_file(self.model_trainer_config.model_config_file_path)['model_selection']["mode"][best_model_name]["search_param_grid"]
+
+            grid_search = GridSearchCV(
+                best_model_object, param_grid=model_param_grid, cv=5, n_jobs=-1, verbose=1)
+            
+            grid_search.fit(X_train, y_train)
+
+            best_params = grid_search.best_params_
+
+            print("Best params are: ", best_params)
+
+            fine_tuned_model = best_model_object.set_params(best_params)
+
+            return fine_tuned_model
+        
+
+        except Exception as e:
+            raise CustomException(sys, e) from e 
+
+    def initiate_model(self, train_array, test_array):
+        try:
+            logging.info(f"Splitting training and testing input and target feature")
+
+            x_train, x_test, y_train, y_test = (
+                train_array[:, :-1],
+                train_array[:, -1],
+                test_array[:, :-1],
+                test_array[:,-1]
+            )
+        
+
+            logging.info(f"Extracting model config file path")
+
+            model_report: dict = self.evaluate_model(x=x_train, y=y_train, models=self.models)
+
+            #To get the model from dict 
+            best_model_score = max(sorted(model_report.values()))
+
+            # To get best model name from dict
+
+            best_model_name = list(model_report.keys())[
+                list(model_report.values()).index(best_model_score)
+            ]
+
+            best_model = self.models[best_model_name]
+
+
+            best_model = self.fine_tune_best_model(
+                best_model_name=best_model_name,
+                best_model_object=best_model,
+                X_train=x_train,
+                y_train=y_train
+            )
+
+
+            best_model.fit(x_train,y_train)
+
+            y_pred = best_model.predict(x_test)
+            best_model_score = accuracy_score(y_test, y_pred)
+
+
+            print(f"best model {best_model_name} and score: {best_model_score}")
+
+
+
+            if best_model_score < 0.5:
+                raise Exception("No best model found with an accuracy greater than the threshold 0.6")
+           
+            logging.info(f"Best found model on both training and testing dataset")
+
+            logging.info(
+                f"Saving model at path: {self.model_trainer_config.trained_model_path}"
+            )
+
+            os.makedirs(os.path.join(self.model_trainer_config.trained_model_path), exist_ok=True)
+
+            self.utils.save_object(
+                file_path=self.model_trainer_config.trained_model_path,
+                obj=best_model
+            )
+           
+            return self.model_trainer_config.trained_model_path
+        
+        except Exception as e:
+            raise CustomException(sys, e) from e
